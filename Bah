@@ -9,114 +9,110 @@ $interval = 60  # 1 minute
 # Global variable to control sending data
 $global:DATA = @{ REPORT = $true }
 
-Write-Host "Starting Real-Time System Monitor..." -ForegroundColor Cyan
-Write-Host "Commands while running:" -ForegroundColor Yellow
-Write-Host "`$global:DATA.REPORT = `$false  -> Stop sending reports" -ForegroundColor Yellow
-Write-Host "`$global:DATA.REPORT = `$true   -> Resume sending reports" -ForegroundColor Yellow
+# Log file for debugging
+$logPath = "C:\Scripts\RealTimeMonitor.log"
+if (-not (Test-Path "C:\Scripts")) { New-Item -ItemType Directory -Path "C:\Scripts" | Out-Null }
+
+Write-Output "Starting Real-Time Monitor at $(Get-Date)" | Tee-Object -FilePath $logPath
 
 while ($true) {
+    try {
+        if ($global:DATA.REPORT) {
 
-    # --- Check if reporting is enabled ---
-    if (-not $global:DATA.REPORT) {
-        Write-Host "⏸ Reporting paused. Use `$global:DATA.REPORT = `$true to resume." -ForegroundColor DarkYellow
-        Start-Sleep -Seconds 5
-        continue
-    }
+            # --- CPU ---
+            $cpu = Get-CimInstance Win32_Processor
+            $cpuLoad = $cpu.LoadPercentage
+            $cpuName = $cpu.Name
+            $cpuCores = $cpu.NumberOfCores
+            $cpuLogical = $cpu.NumberOfLogicalProcessors
+            $cpuSpeed = $cpu.MaxClockSpeed
+            $cpuWarning = if ($cpuLoad -gt 80) { "⚠️ High CPU!" } else { "" }
 
-    # --- CPU Info ---
-    $cpu = Get-CimInstance Win32_Processor
-    $cpuLoad = $cpu.LoadPercentage
-    $cpuName = $cpu.Name
-    $cpuCores = $cpu.NumberOfCores
-    $cpuLogical = $cpu.NumberOfLogicalProcessors
-    $cpuSpeed = $cpu.MaxClockSpeed
-    $cpuWarning = if ($cpuLoad -gt 80) { "⚠️ High CPU!" } else { "" }
+            # --- Memory ---
+            $mem = Get-CimInstance Win32_ComputerSystem
+            $os = Get-CimInstance Win32_OperatingSystem
+            $totalMemGB = [math]::Round($mem.TotalPhysicalMemory / 1GB, 2)
+            $freeMemGB = [math]::Round($os.FreePhysicalMemory / 1MB / 1, 2)
+            $usedMemGB = [math]::Round($totalMemGB - $freeMemGB, 2)
+            $memUsagePercent = [math]::Round(($usedMemGB/$totalMemGB)*100,2)
+            $pageFileUsageMB = [math]::Round(($os.TotalVirtualMemorySize - $os.FreeVirtualMemory)/1MB,2)
+            $ramWarning = if ($memUsagePercent -gt 90) { "⚠️ High RAM!" } else { "" }
 
-    # --- Memory Info ---
-    $mem = Get-CimInstance Win32_ComputerSystem
-    $os = Get-CimInstance Win32_OperatingSystem
-    $totalMemGB = [math]::Round($mem.TotalPhysicalMemory / 1GB, 2)
-    $freeMemGB = [math]::Round($os.FreePhysicalMemory / 1MB / 1, 2)
-    $usedMemGB = [math]::Round($totalMemGB - $freeMemGB, 2)
-    $memUsagePercent = [math]::Round(($usedMemGB/$totalMemGB)*100,2)
-    $pageFileUsageMB = [math]::Round(($os.TotalVirtualMemorySize - $os.FreeVirtualMemory)/1MB,2)
-    $ramWarning = if ($memUsagePercent -gt 90) { "⚠️ High RAM!" } else { "" }
+            # --- Disk ---
+            $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+            $diskInfo = ""
+            foreach ($disk in $disks) {
+                $sizeGB = [math]::Round($disk.Size / 1GB, 2)
+                $freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
+                $usedGB = $sizeGB - $freeGB
+                $percentFree = [math]::Round(($disk.FreeSpace / $disk.Size)*100, 2)
+                $percentUsed = [math]::Round(($usedGB / $sizeGB)*100, 2)
+                $diskWarning = if ($percentFree -lt 10) { "⚠️ Low disk space!" } else { "" }
+                $diskInfo += "$($disk.DeviceID): $sizeGB GB total, $freeGB GB free ($percentFree`% free / $percentUsed`% used) $diskWarning`n"
+            }
 
-    # --- Disk Info ---
-    $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
-    $diskInfo = ""
-    foreach ($disk in $disks) {
-        $sizeGB = [math]::Round($disk.Size / 1GB, 2)
-        $freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
-        $usedGB = $sizeGB - $freeGB
-        $percentFree = [math]::Round(($disk.FreeSpace / $disk.Size)*100, 2)
-        $percentUsed = [math]::Round(($usedGB / $sizeGB)*100, 2)
-        $diskWarning = if ($percentFree -lt 10) { "⚠️ Low disk space!" } else { "" }
-        $diskInfo += "$($disk.DeviceID): $sizeGB GB total, $freeGB GB free ($percentFree`% free / $percentUsed`% used) $diskWarning`n"
-    }
+            # --- GPU ---
+            $gpu = Get-CimInstance Win32_VideoController
+            $gpuInfo = ""
+            foreach ($g in $gpu) {
+                $gpuInfo += "$($g.Name) - VRAM: $([math]::Round($g.AdapterRAM/1MB,2)) MB, Driver: $($g.DriverVersion)`n"
+            }
 
-    # --- GPU Info ---
-    $gpu = Get-CimInstance Win32_VideoController
-    $gpuInfo = ""
-    foreach ($g in $gpu) {
-        $gpuInfo += "$($g.Name) - VRAM: $([math]::Round($g.AdapterRAM/1MB,2)) MB, Driver: $($g.DriverVersion)`n"
-    }
+            # --- Monitor ---
+            $monitors = Get-CimInstance Win32_DesktopMonitor | Where-Object { $_.MonitorType -ne $null }
+            $monitorInfo = ""
+            if ($monitors) {
+                $count = 1
+                foreach ($mon in $monitors) {
+                    $monitorInfo += "Monitor $count: $($mon.Name)`n"
+                    $count++
+                }
+            } else { $monitorInfo = "Monitor info: Unable to detect`n" }
 
-    # --- Monitor Info ---
-    $monitors = Get-CimInstance Win32_DesktopMonitor | Where-Object { $_.MonitorType -ne $null }
-    $monitorInfo = ""
-    if ($monitors) {
-        $count = 1
-        foreach ($mon in $monitors) {
-            $monitorInfo += "Monitor $count: $($mon.Name)`n"
-            $count++
-        }
-    } else { $monitorInfo = "Monitor info: Unable to detect`n" }
+            # --- Battery ---
+            $battery = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue
+            if ($battery) {
+                $batteryInfo = ""
+                foreach ($b in $battery) {
+                    $batteryInfo += "Status: $($b.BatteryStatus), Charge: $($b.EstimatedChargeRemaining)%`n"
+                }
+            } else { $batteryInfo = "Battery: N/A`n" }
 
-    # --- Battery Info ---
-    $battery = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue
-    if ($battery) {
-        $batteryInfo = ""
-        foreach ($b in $battery) {
-            $batteryInfo += "Status: $($b.BatteryStatus), Charge: $($b.EstimatedChargeRemaining)%`n"
-        }
-    } else { $batteryInfo = "Battery: N/A`n" }
+            # --- Network ---
+            $adapters = Get-NetAdapter | Where-Object {$_.Status -eq "Up"}
+            $networkInfo = ""
+            foreach ($adapter in $adapters) {
+                $ip = (Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4).IPAddress
+                $mac = $adapter.MacAddress
+                $networkInfo += "$($adapter.Name) - IP: $ip, MAC: $mac, Status: $($adapter.Status)`n"
+            }
 
-    # --- Network Info ---
-    $adapters = Get-NetAdapter | Where-Object {$_.Status -eq "Up"}
-    $networkInfo = ""
-    foreach ($adapter in $adapters) {
-        $ip = (Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4).IPAddress
-        $mac = $adapter.MacAddress
-        $networkInfo += "$($adapter.Name) - IP: $ip, MAC: $mac, Status: $($adapter.Status)`n"
-    }
+            # --- Top processes ---
+            $topCPU = Get-Process | Sort-Object CPU -Descending | Select-Object -First 5
+            $topCPUInfo = ""
+            foreach ($p in $topCPU) {
+                $topCPUInfo += "$($p.ProcessName) - CPU: $([math]::Round($p.CPU,2)) sec, Memory: $([math]::Round($p.WorkingSet/1MB,2)) MB`n"
+            }
 
-    # --- Top CPU and Memory Processes ---
-    $topCPU = Get-Process | Sort-Object CPU -Descending | Select-Object -First 5
-    $topCPUInfo = ""
-    foreach ($p in $topCPU) {
-        $topCPUInfo += "$($p.ProcessName) - CPU: $([math]::Round($p.CPU,2)) sec, Memory: $([math]::Round($p.WorkingSet/1MB,2)) MB`n"
-    }
+            $topMem = Get-Process | Sort-Object WS -Descending | Select-Object -First 5
+            $topMemInfo = ""
+            foreach ($p in $topMem) {
+                $topMemInfo += "$($p.ProcessName) - Memory: $([math]::Round($p.WorkingSet/1MB,2)) MB, CPU: $([math]::Round($p.CPU,2)) sec`n"
+            }
 
-    $topMem = Get-Process | Sort-Object WS -Descending | Select-Object -First 5
-    $topMemInfo = ""
-    foreach ($p in $topMem) {
-        $topMemInfo += "$($p.ProcessName) - Memory: $([math]::Round($p.WorkingSet/1MB,2)) MB, CPU: $([math]::Round($p.CPU,2)) sec`n"
-    }
+            # --- Running processes count ---
+            $runningProcessesCount = (Get-Process).Count
 
-    # --- Running Processes Count ---
-    $runningProcessesCount = (Get-Process).Count
+            # --- Security ---
+            $firewall = (Get-NetFirewallProfile | Select-Object -First 1).Enabled
+            $defender = (Get-MpComputerStatus).AMServiceEnabled
 
-    # --- Security Info ---
-    $firewall = (Get-NetFirewallProfile | Select-Object -First 1).Enabled
-    $defender = (Get-MpComputerStatus).AMServiceEnabled
+            # --- System uptime ---
+            $uptime = (Get-Date) - $os.LastBootUpTime
+            $uptimeHrs = [math]::Round($uptime.TotalHours,2)
 
-    # --- System Uptime ---
-    $uptime = (Get-Date) - $os.LastBootUpTime
-    $uptimeHrs = [math]::Round($uptime.TotalHours,2)
-
-    # --- Build Diagnostic Message ---
-    $diagnosticMessage = @"
+            # --- Build Discord message ---
+            $diagnosticMessage = @"
 **💻 Real-Time System Monitor**
 **CPU:** $cpuName - Cores: $cpuCores, Logical: $cpuLogical, Max Clock: $cpuSpeed MHz, Load: $cpuLoad% $cpuWarning
 **RAM:** $totalMemGB GB total, $freeMemGB GB free ($memUsagePercent`% used) $ramWarning, Page File: $pageFileUsageMB MB
@@ -141,15 +137,18 @@ $topMemInfo
 **System Uptime:** $uptimeHrs hours
 "@
 
-    # --- Send to Discord ---
-    $body = @{
-        "content" = $diagnosticMessage
-    } | ConvertTo-Json
+            # --- Send to Discord ---
+            $body = @{ "content" = $diagnosticMessage } | ConvertTo-Json
+            Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $body -ContentType 'application/json'
 
-    Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $body -ContentType 'application/json'
+            Add-Content -Path $logPath -Value "✅ Sent at $(Get-Date)"
 
-    Write-Host "✅ Diagnostic sent to Discord at $(Get-Date)!"
+        } else {
+            Add-Content -Path $logPath -Value "⏸ Reporting paused at $(Get-Date)"
+        }
+    } catch {
+        Add-Content -Path $logPath -Value "❌ Error at $(Get-Date): $_"
+    }
 
-    # --- Wait interval before next update ---
     Start-Sleep -Seconds $interval
 }
